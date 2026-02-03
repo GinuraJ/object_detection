@@ -1,74 +1,59 @@
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, File, UploadFile
 from ultralytics import YOLO
-import cv2, numpy as np, tempfile, traceback, os
+import cv2
+import numpy as np
 
-app = FastAPI(title="Tree & Human Detection API")
+app = FastAPI(title="YOLO Tree & Human Detection API")
 
+# -------- CONFIG --------
 MODEL_PATH = "my_model.pt"
-CONFIDENCE_THRESHOLD = 0.5
-
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
+CONFIDENCE_THRESHOLD = 0.25
+# ------------------------
 
 model = YOLO(MODEL_PATH)
-labels = model.names
 
 @app.post("/detect")
-async def detect_image(file: UploadFile = File(...)):
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
-            tmp.write(await file.read())
-            img_path = tmp.name
+async def detect_objects(file: UploadFile = File(...)):
+    # Read image
+    image_bytes = await file.read()
+    np_img = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(np_img, cv2.IMREAD_COLOR)
 
-        frame = cv2.imread(img_path)
-        if frame is None:
-            return JSONResponse({"error": "Failed to read image"}, status_code=400)
+    # Run YOLO
+    results = model.predict(
+        source=img,
+        conf=CONFIDENCE_THRESHOLD,
+        verbose=False
+    )
 
-        results = model(frame, verbose=False)
-        detections = results[0].boxes
+    # Response structure
+    response = {
+        "tree_pixel_heights": [],
+        "human_pixel_heights": [],
+        "tree_count": 0,
+        "human_count": 0,
+        "tree_bottom_pixels": [],
+        "human_bottom_pixels": []
+    }
 
-        tree_heights, human_heights = [], []
-        tree_bottom_pixels, human_bottom_pixels = [], []
-        tree_count = human_count = 0
+    for r in results:
+        boxes = r.boxes
 
-        for det in detections:
-            xyxy = det.xyxy.cpu().numpy().squeeze()
-            xmin, ymin, xmax, ymax = xyxy.astype(int)
-            classidx = int(det.cls.item())
-            classname = labels[classidx].lower()
-            conf = float(det.conf.item())
+        for box, cls in zip(boxes.xyxy, boxes.cls):
+            x1, y1, x2, y2 = map(int, box)
+            label = r.names[int(cls)]
 
-            if conf >= CONFIDENCE_THRESHOLD:
-                pixel_height = int(ymax - ymin)
-                bottom_pixel = int(ymax)
-                if classname == "tree":
-                    tree_heights.append(pixel_height)
-                    tree_bottom_pixels.append(bottom_pixel)
-                    tree_count += 1
-                elif classname == "human":
-                    human_heights.append(pixel_height)
-                    human_bottom_pixels.append(bottom_pixel)
-                    human_count += 1
+            pixel_height = y2 - y1
+            bottom_pixel = y2
 
-        os.remove(img_path)
+            if label.lower() == "tree":
+                response["tree_count"] += 1
+                response["tree_pixel_heights"].append(pixel_height)
+                response["tree_bottom_pixels"].append(bottom_pixel)
 
-        return {
-            "tree_pixel_heights": tree_heights,
-            "human_pixel_heights": human_heights,
-            "tree_count": tree_count,
-            "human_count": human_count,
-            "tree_bottom_pixels": tree_bottom_pixels,
-            "human_bottom_pixels": human_bottom_pixels
-        }
+            elif label.lower() in ["person", "human"]:
+                response["human_count"] += 1
+                response["human_pixel_heights"].append(pixel_height)
+                response["human_bottom_pixels"].append(bottom_pixel)
 
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-# if __name__ == "__main__":
-#     import uvicorn
-#     uvicorn.run("api:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), reload=True)
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("api:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    return response
