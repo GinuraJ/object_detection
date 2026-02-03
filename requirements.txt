@@ -1,6 +1,18 @@
+# fastapi
+# uvicorn[standard]
+# ultralytics
+# opencv-python-headless
+# numpy
+# python-multipart
+
 fastapi
-uvicorn[standard]
-ultralytics
+uvicorn
+python-multipart
 opencv-python-headless
 numpy
-python-multipart
+ultralytics
+
+# CPU-only PyTorch
+torch==2.1.2+cpu
+torchvision==0.16.2+cpu
+
